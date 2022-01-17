@@ -1,4 +1,5 @@
 # build algorithm on SART CORS data
+# kat correia
 
 library(tidyverse)
 library(VGAM)           # for fitting right-censored Poisson
