@@ -2,9 +2,10 @@
 # prepare sart cors database for analysis (derive vars, wrangle etc)
 # and assign women to training and testing sets
 # only include women with first stim cycle between 1/1/14 and 12/31/19
-# that is, exclude transfers from women that had stim cycle prior  to 1/1/13
 
 library(tidyverse)
+
+path <- "~/cluster-scratch/R03/Data/"
 
 # -------------------- convert csv file to RDS --------------------------------
 # -------------------- ONLY DO THIS ONCE --------------------------------------
@@ -25,14 +26,17 @@ library(tidyverse)
 
 # -------------------- load data ----------------------------------------
 
-sart_full_raw <- readRDS("Z:/SARTCORS/sart_full_raw.RDS")
+sart_raw <- readRDS(paste0(path, "sart_raw.RDS"))
+
+#sart_raw %>% count(donor_oocyte)
+#sart_raw %>% count(donor_embryo)
+#sart_raw %>% count(gestational_carrier)
 
 # -------------------- wrangle data ----------------------------------------
 
-# "cannot allocate vector of size ..." errors + R keeps crashing; 
-# try breaking up the steps and re-arranging
+# memory errors + R keeps crashing; try breaking up the steps and re-arranging
 
-# derive variables and make sure no GCs or eggs donors are included
+# 800,738 to 783,391
 sart_a <- sart_raw %>%
   # exclude non-ivf cycles and cycles where both fresh and frozen were transferred
   filter(pgd=="N" & gift=="N" & zift=="N" & gestational_carrier=="N" & donor_oocyte=="N" &
@@ -106,12 +110,6 @@ sart_a <- sart_raw %>%
                              | tubal_other=="Y", yes="Y", no="N")
          , dx_ovulation = ifelse(polycystic_ovaries=="Y" | ovulation_disorders == "Y" | other_ovulation_disorders == "Y"
                                  | hypothalamic_amenorrhea=="Y", yes="Y", no="N")
-         , any_icsi = case_when(icsi_none=="Y" ~ "No"
-                                , icsi_some_oocytes=="Y" | icsi_all_mature_oocytes=="Y" ~ "Yes"
-                                , icsi_not_entered=="Y" | icsi_unknown=="Y" ~ "Missing")
-         , any_ah = case_when(assisted_hatching=="None" ~ "No"
-                              , assisted_hatching %in% c("All Transferred Embryos", "Some Embryos") ~ "Yes"
-                              , assisted_hatching %in% c("Not Entered", "Unknown") ~ "Missing")
          , total2pn = parse_number(total2pn)
          , cycle_type = case_when(retrieval_type_autologous_retrieval1=="Fresh" ~ "Fresh"
                                   , retrieval_type_autologous_retrieval1=="Embryo Banking" ~ "Embryo Banking"
@@ -161,53 +159,95 @@ sart_a <- sart_raw %>%
          , starts_with("retrieval_type_autologous_retrieval"), cycle_type
          , starts_with("number_retrieved_autologous_retrieval")
          , starts_with("number_thawed_autologous_retrieval")
-         , total2pn, assisted_hatching, any_ah, pgd, starts_with("pgd_")
-         , starts_with("icsi_"), any_icsi
+         , total2pn, pgd, starts_with("pgd_")
          , laboratory_routine
+         , freeze_all
          , starts_with("embryos_to_uterus")
          , transfer_attempted, reason_for_no_transfer
          , elective_single_embryo_transfer
-         , starts_with("fresh_embryos_cryoed"), starts_with("blastocyst_transfer")
-         # embryo morphology
-         # can't use these since they are about the quality of the embryos transferred to the uterus
-         # , starts_with("grade_embryo_morphology"), starts_with("stage_embryo_morphology")
-         # , starts_with("fragmentation_embryo_morphology")
-         # , starts_with("morphology_embryo_morphology")
-         # , starts_with("symmetry_embryo_morphology")
-         # , starts_with("inner_cell_embryo_morphology")
-         # , starts_with("trophoblast_embryo_morphology")
+         , starts_with(c("retrieval_day_of_transfer", "fresh_embryos_cryoed"
+                         , "oocytes_cryoed", "blastocyst_transfer"
+                         , "start_date_freeze_date_diff_autologous_retrieval"))
          , starts_with("treatment_outcome"), starts_with("pregnancy_outcome")
          , pregnancy_loss_abortion
          , starts_with("grade_embryo"), starts_with("stage_embryo")
          , number_live_born
          , preg, lb, cycle_classification)
 
+
+# sart_a %>%
+#   select(-external_patient_id, -external_cycle_id) %>%
+#   gtsummary::tbl_summary(missing_text="Unknown"
+#                          #, type =  all_continuous() ~ "continuous2"
+#                          , statistic = list(all_continuous2() ~ c("{mean} ({sd})"
+#                                                                   , "{median} ({p25}, {p75})"
+#                                                                   , "{min} - {max}")
+#                                             , all_categorical() ~ "{n} ({p}%)"))
+
+
 # TO SAVE SPACE, remove each dataset once have next
-if (exists("sart_full_a")) { rm(sart_full_raw) }
-
-nrow(sart_full_a)
-
-count(sart_full_a, clinic_region_usa, clinic_state)
-mosaic::favstats(~patient_age_at_start, data=sart_full_a)
+if (exists("sart_a")) { rm(sart_raw) }
 
 # now compute number of oocytes retrieved and 
 # number of embryos transferred in two data steps: 
 # first, make all the fields numeric
 # then, sum them up
+# n= 783,343
 sart_b <- sart_a %>%
-  mutate(across(starts_with(c("embryos_to_uterus","number_retrieved_autologous_retrieval")), ~ parse_number(.x)))
+  mutate(across(starts_with(c("embryos_to_uterus","number_retrieved_autologous_retrieval"
+                              , "retrieval_day_of_transfer"
+                              , "fresh_embryos_cryoed", "oocytes_cryoed")), ~ parse_number(.x))) %>%
+  # there are some repeats of same cycle ID for 16 cycles?? some as many as 8 times.
+  # keep first one
+  group_by(external_patient_id, external_cycle_id) %>%
+  mutate(cyctemp=row_number()) %>%
+  ungroup() %>%
+  filter(cyctemp==1)
 
 # TO SAVE SPACE, remove each dataset once have next
 if (exists("sart_b")) { rm(sart_a) }
 
+sart_c1 <- sart_b %>%
+  select(external_patient_id, external_cycle_id, starts_with(c("number_retrieved_autologous_retrieval", "embryos_to_uterus", "fresh_embryos_cryoed"
+                                                               , "oocytes_cryoed"))) %>%
+  pivot_longer(cols=starts_with(c("number_retrieved_autologous_retrieval", "embryos_to_uterus", "fresh_embryos_cryoed"
+                                  , "oocytes_cryoed")), names_to = "variable", values_to = "value") %>%
+  mutate(var2 = case_when(str_detect(variable, "number_retrieved_autologous_retrieval") ~ "num_retrieved"
+                          , str_detect(variable, "embryos_to_uterus") ~ "num_transferred"
+                          , str_detect(variable, "fresh_embryos_cryoed") ~ "num_fresh_embryos_cryoed"
+                          , str_detect(variable, "oocytes_cryoed") ~ "num_oocytes_cryoed")) %>%
+  group_by(external_patient_id, external_cycle_id, var2) %>%
+  summarize(sumvalue0 = sum(value, na.rm=TRUE)
+            , nmiss = sum(is.na(value))) %>%
+  ## there are 6 retrieved variables, 24 ET variables, 6 cryod variables 
+  mutate(sumvalue = case_when(var2=="num_retrieved" & nmiss==6 ~ NA_real_
+                              , var2=="num_transferred" & nmiss==24 ~ NA_real_
+                              , var2=="num_fresh_embryos_cryoed" & nmiss==6 ~ NA_real_
+                              , var2=="num_oocytes_cryoed" & nmiss==6 ~ NA_real_
+                              , TRUE ~ sumvalue0)) %>%
+  pivot_wider(id_cols = c(external_patient_id, external_cycle_id), names_from=var2, values_from = sumvalue) %>%
+  ungroup()
+
+sart_c2 <- sart_b %>%
+  select(external_patient_id, external_cycle_id, starts_with(c("retrieval_day_of_transfer"))) %>%
+  pivot_longer(cols=starts_with(c("retrieval_day_of_transfer")), names_to = "variable", values_to = "value") %>%
+  group_by(external_patient_id, external_cycle_id) %>%
+  summarize(min_dayET = min(value, na.rm=TRUE)
+            , max_dayET = max(value, na.rm=TRUE)) %>%
+  ungroup()
+
 sart_for_R03 <- sart_b %>%
-  mutate(num_retrieved = rowSums(.[grep("number_retrieved_autologous_retrieval", names(.))], na.rm = TRUE)
-         , num_transferred = rowSums(.[grep("embryos_to_uterus", names(.))], na.rm = TRUE)
-         , agegrp =  case_when(patient_age_at_start < 35 ~ "<35"
-                               , patient_age_at_start >= 35 & patient_age_at_start < 38 ~ "35-37"
-                               , patient_age_at_start >= 38 & patient_age_at_start < 41 ~ "38-40"
-                               , patient_age_at_start >= 41 & patient_age_at_start < 43 ~ "41-42"
-                               , patient_age_at_start >= 43 ~ ">42")
+  left_join(sart_c1, by=c("external_patient_id", "external_cycle_id")) %>%
+  left_join(sart_c2, by=c("external_patient_id", "external_cycle_id")) %>%
+  mutate(min_dayET = ifelse(is.finite(min_dayET), yes=min_dayET, no=NA_real_)
+         , max_dayET = ifelse(is.finite(max_dayET), yes=max_dayET, no=NA_real_)
+         , num_TC = num_transferred + num_fresh_embryos_cryoed
+         , agegrp =  factor(case_when(patient_age_at_start < 35 ~ "<35"
+                                      , patient_age_at_start >= 35 & patient_age_at_start < 38 ~ "35-37"
+                                      , patient_age_at_start >= 38 & patient_age_at_start < 41 ~ "38-40"
+                                      , patient_age_at_start >= 41 & patient_age_at_start < 43 ~ "41-42"
+                                      , patient_age_at_start >= 43 ~ ">42")
+                            , levels=c("<35", "35-37", "38-40", "41-42", ">42"))
          , numER = case_when(0 <= num_retrieved & num_retrieved <= 5 ~ "<6"
                              , 5 < num_retrieved & num_retrieved <= 10 ~ "6-10"
                              , 10 < num_retrieved & num_retrieved <= 15 ~ "11-15"
@@ -221,32 +261,10 @@ sart_for_R03 <- sart_b %>%
 # TO SAVE SPACE, remove each dataset once have next
 if (exists("sart_for_R03")) { rm(sart_b) }
 
-# check derivations
-# mosaic::favstats(~num_retrieved, data=sart_for_R03)
-# mosaic::favstats(~num_transferred, data=sart_for_R03)
-# sart_for_R03 %>% count(bmicat4)
-# sart_for_R03 %>% count(bmicat6)
-# sart_for_R03 %>% count(fsh_gt10)
-# sart_for_R03 %>% count(amhcat3)
-# mosaic::favstats(amh_last_value ~ amhcat3, data=sart_for_R03)
-# mosaic::favstats(max_fsh ~ fsh_gt10, data=sart_for_R03)
-# sart_for_R03 %>% count(gravidity_cat4, gravidity)
-# sart_for_R03 %>% count(parity_cat4, parity)
-# sart_for_R03 %>% count(retrieval_type_autologous_retrieval1, cycle_type)
-# sart_for_R03 %>% count(cycle_type, num_transferred)
-# sart_for_R03 %>% count(num_transferred, elective_single_embryo_transfer)
-# sart_for_R03 %>% count(dx_tubal, tubal_ligation, tubal_hydrosalpinx, tubal_other)
-# sart_for_R03 %>% count(dx_ovulation, polycystic_ovaries, hypothalamic_amenorrhea, ovulation_disorders, other_ovulation_disorders)
-# sart_for_R03 %>% count(pgd)
-# sart_for_R03 %>% count(transfer_attempted, pgd)
 
-# sart %>%
-#   select(cycle_type, num_transferred, starts_with("embryos_to_uterus")) %>%
-#   slice(1:20)
+# -------------------- save cleaned data --------------------------------------
 
-# -------------------- save cleaned data -------------------------------------
-
-saveRDS(sart_for_R03, file = "Z:/R03/Data/sart_for_R03.RDS")
+saveRDS(sart_for_R03, file = paste0(path, "sart_for_R03.RDS"))
 
 
 # ----------------------------------------------------------------------------
@@ -257,6 +275,8 @@ saveRDS(sart_for_R03, file = "Z:/R03/Data/sart_for_R03.RDS")
 
 # if a cycle is a thaw cycle, it will have a non-NULL link_source_external_cycle_id
 # if fresh, that field will be NULL
+# n=527,091 stimulation cycles
+# n=495,704 stimulation cycles that started in 2014 or later
 sart_stim0 <- sart_for_R03 %>%
   filter(linked_source_external_cycle_i_ds=="NULL" & reporting_year >= 2014)
 
@@ -264,102 +284,154 @@ sart_stim0 %>% count(reporting_year)
 sart_stim0 %>% count(cycle_order)
 length(unique(sart_stim0$external_patient_id))
 
-# identify women who had a first cycle 2014 or later 
-# and were between 18-45 yo at that first cycle
+# remove stim cycles from women whose first stim was before 2014
 sart_stim_first <- sart_stim0 %>%
-  group_by(external_patient_id) %>%
-  mutate(first_cycle = min(cycle_order)) %>%
-  filter(first_cycle==1 & cycle_order==first_cycle & 
+  filter(cycle_order==1 & 
            patient_age_at_start >= 18 & patient_age_at_start <= 45)
 
 mosaic::favstats(~patient_age_at_start, data=sart_stim_first)
 
-# only keep women who had a first cycle 2014 or later 
-# and were between 18-45 yo at that first cycle
-sart_stim <- sart_stim0 %>%
+sart_stim1 <- sart_stim0 %>%
   filter(external_patient_id %in% sart_stim_first$external_patient_id)
 
-length(unique(sart_stim$external_patient_id))
 
 # -------------------- transfer cycles (fresh + frozen) -----------------------
 
 # ONLY KEEP TRANSFERS THAT RESULTED FROM STIMS IN 2014+
 
-sart_frozen <- sart_for_R03 %>%
+# frozen cycles with > 0 ET & w corresponding stim cycles in 2014+
+sart_frozen0 <- sart_for_R03 %>%
   filter(linked_source_external_cycle_i_ds != "NULL") %>%
-  rename(frozen_cycle_id = external_cycle_id) %>%
   mutate(frozen = 1
          # hand-correct one super long weird linked ID that repeats
          , linked_source_external_cycle_i_ds=ifelse(linked_source_external_cycle_i_ds ==
                                                       "76162769, 76162770, 76162771, 76162771, 76162772, 76162774, 76162774, 76162769, 76162769, 76162770, 76162770, 76162771, 76162772, 76162772, 76162774"
                                                     , yes = "76162769, 76162770, 76162771, 76162772, 76162774"
-                                                    , no = linked_source_external_cycle_i_ds)) %>%
+                                                    , no = linked_source_external_cycle_i_ds))
+
+
+sart_frozen1 <- sart_frozen0 %>%
   # the ones with 5 and 6 end up repeating the linked stim cycles...
   separate(linked_source_external_cycle_i_ds, into=paste0("link",1:6)
            , remove=FALSE, convert=TRUE) %>%
-  left_join(select(sart_for_R03, external_cycle_id, stim_year1 = reporting_year)
-            , by=c("link1"="external_cycle_id")) %>%
-  left_join(select(sart_for_R03, external_cycle_id, stim_year2 = reporting_year)
-            , by=c("link2"="external_cycle_id")) %>%
-  left_join(select(sart_for_R03, external_cycle_id, stim_year3 = reporting_year)
-            , by=c("link3"="external_cycle_id")) %>%
-  left_join(select(sart_for_R03, external_cycle_id, stim_year4 = reporting_year)
-            , by=c("link4"="external_cycle_id")) %>%
-  left_join(select(sart_for_R03, external_cycle_id, stim_year5 = reporting_year)
-            , by=c("link5"="external_cycle_id")) %>%
-  left_join(select(sart_for_R03, external_cycle_id, stim_year6 = reporting_year)
-            , by=c("link6"="external_cycle_id")) %>%
-  # only keep frozen transfers w/ embryos produced from stim cycle in 2014 or later
-  filter((!is.na(link1) & stim_year1 >= 2014) 
-         & (stim_year2 >= 2014 | (is.na(link2) & is.na(stim_year2))) 
-         & (stim_year3 >= 2014 | (is.na(link3) & is.na(stim_year3)))
-         & (stim_year4 >= 2014 | (is.na(link4) & is.na(stim_year4)))
-         & (stim_year5 >= 2014 | (is.na(link5) & is.na(stim_year5)))
-         & (stim_year6 >= 2014 | (is.na(link6) & is.na(stim_year6)))) %>%
-  filter(external_patient_id %in% sart_stim$external_patient_id) %>%
-  filter(num_transferred != 0)
+  select(external_cycle_id, linked_source_external_cycle_i_ds, link1, link2, link3, link4, link5, link6) %>%
+  pivot_longer(cols=-c(external_cycle_id, linked_source_external_cycle_i_ds)
+               , names_to="name", values_to="source_id") %>%
+  filter(!is.na(source_id)) %>%
+  select(-name, -linked_source_external_cycle_i_ds) %>%
+  left_join(sart_frozen0, by=c("external_cycle_id")) %>%
+  # filter on women who meet inclusion criteria (first stim cycle 2014 or later)
+  filter(external_patient_id %in% sart_stim_first$external_patient_id) %>%
+  # also filter on cycles where SOURCE cycle is in sart_for_R03 so no PGD cycles included
+  # (some women had multiple stim cycles, some without PGD and some with...)
+  filter(source_id %in% sart_for_R03$external_cycle_id) %>%
+  group_by(external_cycle_id) %>%
+  mutate(checknum=row_number()) %>%
+  select(checknum, source_id, external_cycle_id, external_patient_id, frozen, min_dayET, max_dayET, num_transferred, everything()) %>%
+  ungroup()
+
+sart_frozen <- sart_frozen1 %>%
+  # the info on multiple rows will be the same (since coming from external_cycle_id, NOT coming from source row)
+  # but need sart_frozen1 by source row so can get info on day ET for stim cycles below . . . 
+  filter(checknum==1) %>%
+  # 2,452 frozen cycles with no ET
+  filter(num_transferred != 0) %>%
+  # for those missing latest amh in frozen transfer cycle, grab latest amh from fresh cycle
+  left_join(select(sart_stim1, external_cycle_id, amhcat3_fresh=amhcat3)
+            , by=c("source_id"="external_cycle_id"))
 
 
-# (of the 50,975 excluded, >45,000 had the corresponding stim cyc < 2014 or age 
+# (of the 50,975 excluded, ~48,000 had the corresponding stim cyc < 2014 or age 
 # at corresponding stim cyc outside of range; the remaining ~5,600 had the corresponding
 # stim cyc >=2014 but belonged to patients whose *first* stim cyc was < 2014 and are
 # thus being excluded...)
-# 
-# sart_frozen %>% slice(19199)
-# sart_frozen %>% slice(136794)
-# sart_frozen %>% count(num_transferred)
-# sart_frozen %>% count(reporting_year)
-# sart_frozen %>% count(stim_year1)
-# sart_frozen %>% count(stim_year2)
-# sart_frozen %>% count(stim_year3)
-# sart_frozen %>% count(stim_year4)
-# sart_frozen %>% count(stim_year5)
-# sart_frozen %>% count(stim_year6)
-# sart_frozen %>% count(cycle_order)
 
-#sart_stim %>% count(num_transferred)
-#sart_stim %>% count(num_transferred, cycle_type)
-
-# some fresh transfers correspond to id's with transfers before 2014 
-# , i.e. initiated first stim before 2014 so need to exclude stims from those women
-sart_fresh <- sart_stim %>%
+# 262,605 fresh transfers but some correspond to id's with transfers
+# before 2014 / initiated first stim before 2014 so need to exclude stims from those women
+sart_fresh <- sart_stim1 %>%
   filter(num_transferred > 0) %>%
   mutate(frozen = 0)
 
-sart_transfers <- bind_rows(sart_fresh, sart_frozen) 
+sart_transfers <- bind_rows(sart_fresh, sart_frozen) %>%
+  mutate(amhcat3_new = factor(case_when(amhcat3 != "Missing" ~ amhcat3
+                                        , amhcat3=="Missing" & !is.na(amhcat3_fresh) ~ amhcat3_fresh
+                                        , amhcat3=="Missing" & is.na(amhcat3_fresh) ~ as.factor("Missing"))
+                              , labels=c("< 1", "1 - <4", ">= 4", "Missing"))
+         , blast_trans=case_when(blastocyst_transfer_autologous_retrieval1=="Y" |
+                                   blastocyst_transfer_autologous_retrieval2=="Y" |
+                                   blastocyst_transfer_autologous_retrieval3=="Y" |
+                                   blastocyst_transfer_autologous_retrieval4=="Y" |
+                                   blastocyst_transfer_autologous_retrieval5=="Y" |
+                                   blastocyst_transfer_autologous_retrieval6=="Y" 
+                                 ~ 1
+                                 , TRUE ~ 0)
+         , d5_include = case_when(blast_trans==1 ~ 1
+                                  , is.na(min_dayET) ~ NA_real_
+                                  , min_dayET >= 5 ~ 1
+                                  , TRUE ~ 0)
+         , num_blasts = ifelse(d5_include==1, yes=num_TC, no=NA_real_)
+         , agegrp6 =  factor(case_when(patient_age_at_start < 32 ~ "<32"
+                                       , patient_age_at_start >= 32 & patient_age_at_start < 35 ~ "32-34"
+                                       , patient_age_at_start >= 35 & patient_age_at_start < 38 ~ "35-37"
+                                       , patient_age_at_start >= 38 & patient_age_at_start < 41 ~ "38-40"
+                                       , patient_age_at_start >= 41 & patient_age_at_start < 43 ~ "41-42"
+                                       , patient_age_at_start >= 43 ~ ">42")
+                             , levels=c("<32", "32-34", "35-37", "38-40", "41-42", ">42"))) %>%
+  select(reporting_year, frozen, d5_include, min_dayET, blast_trans, everything())
+
+
+# -------------- back to stimulation cycles - get day frozen for frozen -------
+
+get_day <- sart_frozen %>% 
+  select(source_id, min_dayET, max_dayET) %>%
+  # same source can contribute to multiple thaw cycles
+  group_by(source_id) %>%
+  summarize(min_dayfreeze0=min(min_dayET)
+            , max_dayfreeze0=max(max_dayET))
+
+sart_stim <- sart_stim1 %>%
+  left_join(get_day, by=c("external_cycle_id"="source_id")) %>%
+  mutate(day_freeze = case_when(!is.na(min_dayET) ~ min_dayET
+                                , TRUE ~ min_dayfreeze0)
+         , blast_trans=case_when(blastocyst_transfer_autologous_retrieval1=="Y" |
+                                   blastocyst_transfer_autologous_retrieval2=="Y" |
+                                   blastocyst_transfer_autologous_retrieval3=="Y" |
+                                   blastocyst_transfer_autologous_retrieval4=="Y" |
+                                   blastocyst_transfer_autologous_retrieval5=="Y" |
+                                   blastocyst_transfer_autologous_retrieval6=="Y" 
+                                 ~ 1
+                                 , TRUE ~ 0)
+         , d5_include = case_when(blast_trans==1 ~ 1
+                                  , is.na(day_freeze) ~ NA_real_
+                                  , day_freeze >= 5 ~ 1
+                                  , TRUE ~ 0)
+         , any_embryos_frozen = ifelse(num_fresh_embryos_cryoed >= 1, yes=1, no=0)
+         , fert_rate = ifelse(num_retrieved != 0, yes = total2pn/num_retrieved, no=NA_real_)
+         , num_blasts = ifelse(d5_include==1, yes=num_TC, no=NA_real_)
+         , blast_rate = num_blasts/num_retrieved
+         , fert_to_blast = num_blasts/total2pn
+         , agegrp6 =  factor(case_when(patient_age_at_start < 32 ~ "<32"
+                                       , patient_age_at_start >= 32 & patient_age_at_start < 35 ~ "32-34"
+                                       , patient_age_at_start >= 35 & patient_age_at_start < 38 ~ "35-37"
+                                       , patient_age_at_start >= 38 & patient_age_at_start < 41 ~ "38-40"
+                                       , patient_age_at_start >= 41 & patient_age_at_start < 43 ~ "41-42"
+                                       , patient_age_at_start >= 43 ~ ">42")
+                             , levels=c("<32", "32-34", "35-37", "38-40", "41-42", ">42"))) %>%
+  select(reporting_year, external_patient_id, external_cycle_id, day_freeze
+         , min_dayET, max_dayET, min_dayfreeze0, max_dayfreeze0, num_transferred
+         , num_retrieved, num_TC, total2pn, num_blasts, fert_rate, blast_rate, fert_to_blast
+         , everything()) 
 
 
 # -------------------- SAVE DATASETS -------------------------------------
 
-# stimulation cycles
-saveRDS(sart_stim, file = "Z:/R03/Data/sart_stim.RDS")
+saveRDS(sart_stim, file = paste0(path, "sart_stim.RDS"))
 
-# transfer cycles
-saveRDS(sart_transfers, file = "Z:/R03/Data/sart_transfers.RDS")
+saveRDS(sart_transfers, file = paste0(path, "sart_transfers.RDS"))
 
 
 # -----------------------------------------------------------------------------
-# ---------------- SPLIT WOMEN into TRAINING and TESTING SETS -----------------
+# ---------------- SPLIT women up into training and testing sets        -------
 # -----------------------------------------------------------------------------
 
 # since all women in transfers have a stim cycle, but not the other way around,
@@ -376,4 +448,4 @@ set_assign <- data.frame(external_patient_id=training_ids
   bind_rows(data.frame(external_patient_id=testing_ids
                        , set="Testing Set"))
 
-saveRDS(set_assign, "Z:/R03/Data/set_assign.RDS")
+saveRDS(set_assign, paste0(path, "set_assign.RDS"))
