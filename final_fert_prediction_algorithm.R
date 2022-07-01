@@ -145,7 +145,7 @@ dat_numETd5_train <- dat_numETd5 %>%
 # ------------------------------- FIT & SAVE FINAL MODELS --------------------- #
 
 mod_ETd5 <- survreg(as.formula(paste0("Surv(totalET, lb) ~ ", predictors_mid))
-                    , data=dat_numETd5, dist='loglogistic')
+                    , data=dat_numETd5_train, dist='loglogistic')
 
 save(mod_ETd5, file="Z:/R03/Data/mod_numETd5.Rdata")
 
