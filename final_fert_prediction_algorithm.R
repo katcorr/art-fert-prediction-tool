@@ -1,31 +1,104 @@
 # FINAL MODELS
-# March 14, 2022
+# June 2022
+
+library(tidyverse)
+library(survival)
+library(ranger)     
 
 sart_stim <- readRDS("Z:/R03/Data/sart_stim.RDS")
 
-sart_transfers <- readRDS("Z:/R03/Data/sart_transfers.RDS") %>%
-  mutate(external_cycle_id = ifelse(is.na(external_cycle_id), yes=frozen_cycle_id
-                                    , no=external_cycle_id))
+sart_transfers <- readRDS("Z:/R03/Data/sart_transfers.RDS") 
 
 set_assign <- readRDS("Z:/R03/Data/set_assign.RDS")
 
-predictors1 <- "clinic_state + bmicat6 + smoker + gravidity_cat4 + parity_cat4 + fsh_gt10 + amhcat3
-               + male_infertility + endometriosis + dx_ovulation + diminished_ovarian_reserve
-               + dx_tubal + uterine + unexplained + numER"
+predictors_slim <- "agegrp6 + clinic_state"
 
-predictors2 <- paste("agegrp +", predictors1)
+predictors_mid <- "agegrp6 + clinic_state + amhcat3_new + diminished_ovarian_reserve + num_retrieved" 
+
+predictors_full <- "agegrp6 + clinic_state + amhcat3_new + num_retrieved + bmicat6 + 
+                    gravidity_cat4 + parity_cat4 + fsh_gt10 +
+                    male_infertility + dx_tubal + endometriosis + uterine + dx_ovulation + 
+                    diminished_ovarian_reserve + unexplained"
+
 
 # ------------------------------------------------------------------------------
-# -----------                   ET MODEL                    --------------------
+# -----------         STAGE 1: DAY 3 OR DAY 5 ET             -------------------
 # ------------------------------------------------------------------------------
 
-# ------------------- get transfers --------------------------------------------
+sart_transfers_set <- sart_transfers %>%
+  left_join(set_assign, by="external_patient_id") %>%
+  mutate(d5 = ifelse(d5_include==1, yes=1, no=0)) %>%
+  filter(!is.na(d5))
 
-dat_step1_0 <- sart_transfers %>%
-  select(external_patient_id, external_cycle_id, cycle_order, reporting_year, num_transferred, lb) %>% 
+sart_transfers_set %>% count(set)
+
+dat_dayET_train <- sart_transfers_set %>%
+  filter(set=="Training Set") 
+
+# ------------------------------- FIT & SAVE FINAL MODEL --------------------- #
+
+# prevent the model.frame, y, and model.matrix from being returned in model object
+mod_dayET <- glm(as.formula(str_replace_all(paste0("d5 ~  ", predictors_mid), "\n", ""))
+                 , data=dat_dayET_train, family="binomial"
+                 , model = FALSE, y = FALSE, x = FALSE) 
+
+# remove data from model object
+mod_dayET$data <- NULL
+
+save(mod_dayET, file="Z:/R03/Data/mod_dayET.Rdata")
+
+
+
+# ------------------------------------------------------------------------------
+# -----------         STAGE 2 - MODEL 1: PROP BLAST          -------------------
+# ------------------------------------------------------------------------------
+
+dat_blast <- sart_stim %>%
+  filter(d5_include==1) %>%
+  left_join(set_assign, by="external_patient_id") %>%
+  filter(num_retrieved != 0 & reason_for_no_transfer!="Inability to obtain sperm" & reason_for_no_transfer != "PGT") %>%
+  mutate(num_TC = case_when(transfer_attempted=="N" & (num_transferred==0 | is.na(num_transferred)) ~ num_fresh_embryos_cryoed
+                            , TRUE ~ num_TC)
+         , num_TC0 = case_when(is.na(num_fresh_embryos_cryoed) & transfer_attempted=="N" ~ NA_real_
+                               , is.na(num_fresh_embryos_cryoed) ~ num_transferred
+                               , is.na(num_transferred) ~ num_fresh_embryos_cryoed
+                               , TRUE ~ num_TC)
+         , blast_rate = num_TC/num_retrieved
+         , blast_rate0 = num_TC0/num_retrieved) %>%
+  # remove 3 cycles where num_TC0 > num_retrieved (one or the other has a data entry error...)
+  filter(num_TC0 <= num_retrieved) %>%
+  select(blast_rate, num_TC, blast_rate0, num_TC0, num_blasts, num_transferred, num_fresh_embryos_cryoed
+         , d5_include, set, reporting_year, external_patient_id, external_cycle_id
+         , agegrp6, clinic_state, amhcat3, num_retrieved, bmicat6, gravidity_cat4, parity_cat4 
+         , fsh_gt10, male_infertility, dx_tubal, endometriosis, uterine, dx_ovulation
+         , diminished_ovarian_reserve, unexplained
+         , transfer_attempted, reason_for_no_transfer)
+
+dat_blast_train <- dat_blast %>%
+  filter(set=="Training Set") 
+
+# ------------------------------- FIT & SAVE FINAL MODEL --------------------- #
+
+mod_d5blast <- ranger(as.formula(str_replace_all(paste0("blast_rate0 ~ ", predictors_mid), "\n", ""))
+                      , data=dat_blast_train)
+
+names(mod_d5blast)
+
+save(mod_d5blast, file="Z:/R03/Data/mod_d5blast.Rdata")
+
+
+# ------------------------------------------------------------------------------
+# -----------         STAGE 2 - MODEL 2: NUM ET NEEDED       -------------------
+# ------------------------------------------------------------------------------
+
+dat_numET0 <- sart_transfers %>%
+  filter(!is.na(d5_include)) %>%
+  select(external_patient_id, external_cycle_id, cycle_order, reporting_year, d5_include, num_transferred, lb) %>% 
   arrange(external_patient_id, cycle_order, external_cycle_id) %>%
   group_by(external_patient_id) %>%
   mutate(cycnum = row_number()
+         , minD5 = min(d5_include)
+         , maxD5 = max(d5_include)
          , totalET = cumsum(num_transferred)
          , totalLB = cumsum(lb)
          , totalETminus1 = totalET - 1
@@ -34,20 +107,20 @@ dat_step1_0 <- sart_transfers %>%
          , max_cycle = max(cycle_order)) %>%
   ungroup()
 
-dat_step1_1 <- dat_step1_0 %>%
+dat_numET1 <- dat_numET0 %>%
   ungroup() %>%
   filter(Keep == TRUE) %>%
   mutate(censored = ifelse(totalLB==1,yes=0,no=1)) %>%
-  select(external_patient_id, cycle_order, totcyc = cycnum, totalET, totalETminus1, lb, censored)
+  select(external_patient_id, minD5, maxD5, cycle_order, totcyc = cycnum, totalET, totalETminus1, lb, censored)
 
-## then take first stimulation cycle info to use as predictors in the model
-## need to account for fact that some transfers are frozen so need
-## external cycle id needs to be taken from thaw field
+# 6.9% are a mix of day 3 and day 5 transfers; 19% are day 3 only; and 74% are day 5 only
+dat_numET1 %>% count(minD5, maxD5) %>% mutate(perc=n/sum(n))
+
 first_cyc <- sart_stim %>%
   filter(cycle_order==1) %>%
   select(first_stim_cycle_id = external_cycle_id, external_patient_id
          , stim_reporting_year = reporting_year, stim_cycle_order = cycle_order
-         , clinic_state, agegrp, numER
+         , clinic_state, agegrp6, numER
          , patient_age_at_start, partner_age_at_start_c, partner_age_at_start_missing
          , bmi_c, bmicat4, bmicat6
          , smoker, gravidity_cat4, parity_cat4, max_fsh, fsh_gt10, amh_last_value, amhcat3
@@ -59,157 +132,20 @@ first_cyc <- sart_stim %>%
 
 # --------- merge w/ first stim cycle parameters & train/test assignment -------
 
-dat_step1 <- dat_step1_1 %>%
+dat_numET <- dat_numET1 %>%
   left_join(first_cyc, by="external_patient_id") %>%
   left_join(set_assign, by="external_patient_id")
 
-dat_step1_train <- dat_step1 %>%
+dat_numETd5 <- dat_numET %>%
+  filter(maxD5==1) 
+
+dat_numETd5_train <- dat_numETd5 %>%
   filter(set=="Training Set")
 
-# ----------- SPLIT INTO DIFF DATASETS FOR DIFF AGE GROUPS --------------------
+# ------------------------------- FIT & SAVE FINAL MODELS --------------------- #
 
-# TRAINING DATA
-dat_step1_train_a1 <- dat_step1_train %>%
-  filter(agegrp=="<35")
+mod_ETd5 <- survreg(as.formula(paste0("Surv(totalET, lb) ~ ", predictors_mid))
+                    , data=dat_numETd5, dist='loglogistic')
 
-dat_step1_train_a2 <- dat_step1_train %>%
-  filter(agegrp=="35-37")
+save(mod_ETd5, file="Z:/R03/Data/mod_numETd5.Rdata")
 
-dat_step1_train_a3 <- dat_step1_train %>%
-  filter(agegrp=="38-40")
-
-dat_step1_train_a4 <- dat_step1_train %>%
-  filter(agegrp=="41-42")
-
-dat_step1_train_a5 <- dat_step1_train %>%
-  filter(agegrp==">42")
-
-# ------------------------- fit models ---------------------------------------
-
-fit_ET_mod <- function(dat){
-  
-  print(mosaic::tally(~censored, data=dat, format="percent"))
-  
-  if(deparse(substitute(dat))=="dat_step1_train_a45"){
-    predictors_a <- predictors2
-    
-  }
-  else{
-    predictors_a <- predictors1
-  }
-  
-  print(predictors_a)
-  
-  # quantile regression model
-  mod1_qr <- rq(as.formula(str_replace_all(paste0("totalET ~ ", predictors_a), "\n", ""))
-                , data = dat
-                , tau = 0.5)
-  
-  # remove data from the model object 
-  mod1_qr$model <- NULL
-  mod1_qr$x <- NULL
-  mod1_qr$y <- NULL 
-
-  print(names(mod1_qr))
-  
-  return(mod1_qr)
-}
-
-# ANALYSES STRATIFIED BY AGE
-mod_ET_a1 <- fit_ET_mod(dat=dat_step1_train_a1)    # 29% censored
-mod_ET_a2 <- fit_ET_mod(dat=dat_step1_train_a2)    # 40.6% censored
-mod_ET_a3 <- fit_ET_mod(dat=dat_step1_train_a3)    # 57% censored
-
-# try collapsing last two groups
-dat_step1_train_a45 <- bind_rows(dat_step1_train_a4, dat_step1_train_a5)
-
-mod_ET_a45 <- fit_ET_mod(dat=dat_step1_train_a45)    # 81% censored
-
-
-# ------------------------------------------------------------------------------
-# -----------                   FERT MODEL                  --------------------
-# ------------------------------------------------------------------------------
-
-dat_step2_0 <- sart_stim %>%
-  left_join(set_assign, by="external_patient_id") %>%
-  filter(num_retrieved != 0) %>%
-  filter(total2pn <= num_retrieved) 
-
-# because need to use sample size in computation of t1, split up now
-dat_step2_train0 <- dat_step2_0 %>%
-  filter(set=="Training Set")
-
-n_fert_train <- nrow(dat_step2_train0)
-
-dat_step2_train <- dat_step2_train0 %>%
-  mutate(fert_rate_proxy = total2pn/num_retrieved) %>%
-  select(-pregnancy_outcome_start_date_diff)
-
-# ----------- SPLIT INTO DIFF DATASETS FOR DIFF AGE GROUPS --------------------
-
-# TRAINING DATA
-dat_step2_train_a1 <- dat_step2_train %>%
-  filter(agegrp=="<35")
-
-dat_step2_train_a2 <- dat_step2_train %>%
-  filter(agegrp=="35-37")
-
-dat_step2_train_a3 <- dat_step2_train %>%
-  filter(agegrp=="38-40")
-
-dat_step2_train_a4 <- dat_step2_train %>%
-  filter(agegrp=="41-42")
-
-dat_step2_train_a5 <- dat_step2_train %>%
-  filter(agegrp==">42")
-
-
-# ----------- FIT THE MODELS --------------------
-
-fit_fert_mod <- function(dat){
-  
-  if(deparse(substitute(dat))=="dat_step2_train_a45"){
-    predictors_a <- predictors2
-    
-  }
-  else{
-    predictors_a <- predictors1
-  }
-  
-  print(predictors_a)
-  
-  # CART
-  mod2_cart <- rpart(as.formula(str_replace_all(paste0("fert_rate_proxy ~ ", predictors_a), "\n", ""))
-                     , data = dat
-                     , method = "anova"   # "class" for a classification tree and "anova" for a regression tree
-                     , control=rpart.control(minsplit=2, minbucket=1, cp=0.001)
-  )
-  
-  # remove data from the model object 
-  mod2_cart$y <- NULL 
-  
-  print(names(mod2_cart))
-  
-  return(mod2_cart)
-}
-
-# ANALYSES STRATIFIED BY AGE
-mod_fert_a1 <- fit_fert_mod(dat=dat_step2_train_a1)    
-mod_fert_a2 <- fit_fert_mod(dat=dat_step2_train_a2)   
-mod_fert_a3 <- fit_fert_mod(dat=dat_step2_train_a3)   
-#mod_fert_a4 <- fit_fert_mods(dat=dat_step2_train_a4)    
-#mod_fert_a5 <- fit_fert_mods(dat=dat_step2_train_a5)   
-
-# try collapsing last two groups
-dat_step2_train_a45 <- bind_rows(dat_step2_train_a4, dat_step2_train_a5)
-
-mod_fert_a45 <- fit_fert_mod(dat=dat_step2_train_a45)
-
-
-# ------------------------------------------------------------------------------
-# -----------                SAVE MODELS                    --------------------
-# ------------------------------------------------------------------------------
-
-save(mod_ET_a1, mod_ET_a2, mod_ET_a3, mod_ET_a45
-    , mod_fert_a1, mod_fert_a2, mod_fert_a3, mod_fert_a45
-    , file="Z:/R03/Data/final_models.RData")
