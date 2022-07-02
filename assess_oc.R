@@ -6,6 +6,8 @@ library(survival)
 library(ranger)     
 library(pROC)       
 
+sart_stim <- readRDS("Z:/R03/Data/sart_stim.RDS")
+
 sart_transfers <- readRDS("Z:/R03/Data/sart_transfers.RDS") 
 
 set_assign <- readRDS("Z:/R03/Data/set_assign.RDS")
