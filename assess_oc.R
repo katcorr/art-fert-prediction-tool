@@ -3,6 +3,7 @@
 
 library(tidyverse)
 library(survival)
+library(rpart)
 library(ranger)     
 library(pROC)       
 
@@ -269,12 +270,13 @@ dat_blast <- sart_stim %>%
                                , is.na(num_transferred) ~ num_fresh_embryos_cryoed
                                , TRUE ~ num_TC)
          , blast_rate = num_TC/num_retrieved
-         , blast_rate0 = num_TC0/num_retrieved) %>%
+         , blast_rate0 = num_TC0/num_retrieved
+         , amhcat3_new = amhcat3) %>%
   # remove 3 cycles where num_TC0 > num_retrieved (one or the other has a data entry error...)
   filter(num_TC0 <= num_retrieved) %>%
   select(blast_rate, num_TC, blast_rate0, num_TC0, num_blasts, num_transferred, num_fresh_embryos_cryoed
          , d5_include, set, reporting_year, external_patient_id, external_cycle_id
-         , agegrp6, clinic_state, amhcat3, num_retrieved, bmicat6, gravidity_cat4, parity_cat4 
+         , agegrp6, clinic_state, amhcat3_new, amhcat3, num_retrieved, bmicat6, gravidity_cat4, parity_cat4 
          , fsh_gt10, male_infertility, dx_tubal, endometriosis, uterine, dx_ovulation
          , diminished_ovarian_reserve, unexplained
          , transfer_attempted, reason_for_no_transfer)
@@ -368,12 +370,13 @@ dat_numET1 <- dat_numET0 %>%
 
 first_cyc <- sart_stim %>%
   filter(cycle_order==1) %>%
+  mutate(amhcat3_new=amhcat3) %>%
   select(first_stim_cycle_id = external_cycle_id, external_patient_id
          , stim_reporting_year = reporting_year, stim_cycle_order = cycle_order
          , clinic_state, agegrp6, numER
          , patient_age_at_start, partner_age_at_start_c, partner_age_at_start_missing
          , bmi_c, bmicat4, bmicat6
-         , smoker, gravidity_cat4, parity_cat4, max_fsh, fsh_gt10, amh_last_value, amhcat3
+         , smoker, gravidity_cat4, parity_cat4, max_fsh, fsh_gt10, amh_last_value, amhcat3, amhcat3_new
          , male_infertility, endometriosis, dx_ovulation, diminished_ovarian_reserve
          , tubal_ligation, tubal_hydrosalpinx, tubal_other, dx_tubal
          , uterine, unexplained
@@ -394,7 +397,7 @@ dat_numETd5_train <- dat_numETd5 %>%
 
 # ---------------------- fit KM model ----------------------------------------
 
-mod_ETd5_km <- survfit(Surv(totalET, lb) ~  agegrp6 + clinic_state, data = dat_numETd5)
+mod_ETd5_km <- survfit(Surv(totalET, lb) ~  agegrp6 + clinic_state, data = dat_numETd5_train)
 
 median_km_dat <- summary(mod_ETd5_km)$table[, "median"] %>% 
   as.data.frame() %>%
@@ -409,13 +412,13 @@ names(median_km_dat)[3] <- "median_KM"
 # ----------------------  AFT models -----------------------------------
 
 mod_ETd5_aft_slim <- survreg(as.formula(paste0("Surv(totalET, lb) ~ ", predictors_slim))
-                             , data=dat_numETd5, dist='loglogistic')
+                             , data=dat_numETd5_train, dist='loglogistic')
 
 mod_ETd5_aft_mid <- survreg(as.formula(paste0("Surv(totalET, lb) ~ ", predictors_mid))
-                            , data=dat_numETd5, dist='loglogistic')
+                            , data=dat_numETd5_train, dist='loglogistic')
 
 mod_ETd5_aft_full <- survreg(as.formula(str_replace_all(paste0("Surv(totalET, lb) ~ ", predictors_full), "\n", ""))
-                             , data=dat_numETd5, dist='loglogistic')
+                             , data=dat_numETd5_train, dist='loglogistic')
 
 concordance(mod_ETd5_aft_slim, mod_ETd5_aft_mid, mod_ETd5_aft_full)
 extractAIC(mod_ETd5_aft_slim)
@@ -428,7 +431,7 @@ anova(mod_ETd5_aft_mid, mod_ETd5_aft_full)
 fitted_values <- mod_ETd5_aft_mid$linear.predictors
 resids <- (log(mod_ETd5_aft_mid$y[, 1]) - fitted_values) / mod_ETd5_aft_mid$scale
 
-resKM <- survfit(Surv(resids, lb) ~ 1, data = dat_numETd5)
+resKM <- survfit(Surv(resids, lb) ~ 1, data = dat_numETd5_train)
 plot(resKM, mark.time = FALSE, xlab = "AFT Residuals", ylab = "No Live Birth Probability")
 xx <- seq(min(resids), max(resids), length.out = 35)
 yy <- plogis(xx, lower.tail = FALSE)
