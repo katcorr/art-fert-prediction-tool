@@ -64,12 +64,13 @@ dat_blast <- sart_stim %>%
                                , is.na(num_transferred) ~ num_fresh_embryos_cryoed
                                , TRUE ~ num_TC)
          , blast_rate = num_TC/num_retrieved
-         , blast_rate0 = num_TC0/num_retrieved) %>%
+         , blast_rate0 = num_TC0/num_retrieved
+         , amhcat3_new = amhcat3) %>%
   # remove 3 cycles where num_TC0 > num_retrieved (one or the other has a data entry error...)
   filter(num_TC0 <= num_retrieved) %>%
   select(blast_rate, num_TC, blast_rate0, num_TC0, num_blasts, num_transferred, num_fresh_embryos_cryoed
          , d5_include, set, reporting_year, external_patient_id, external_cycle_id
-         , agegrp6, clinic_state, amhcat3, num_retrieved, bmicat6, gravidity_cat4, parity_cat4 
+         , agegrp6, clinic_state, amhcat3, amhcat3_new, num_retrieved, bmicat6, gravidity_cat4, parity_cat4 
          , fsh_gt10, male_infertility, dx_tubal, endometriosis, uterine, dx_ovulation
          , diminished_ovarian_reserve, unexplained
          , transfer_attempted, reason_for_no_transfer)
@@ -118,12 +119,13 @@ dat_numET1 %>% count(minD5, maxD5) %>% mutate(perc=n/sum(n))
 
 first_cyc <- sart_stim %>%
   filter(cycle_order==1) %>%
+  mutate(amhcat3_new=amhcat3) %>%
   select(first_stim_cycle_id = external_cycle_id, external_patient_id
          , stim_reporting_year = reporting_year, stim_cycle_order = cycle_order
          , clinic_state, agegrp6, numER
          , patient_age_at_start, partner_age_at_start_c, partner_age_at_start_missing
          , bmi_c, bmicat4, bmicat6
-         , smoker, gravidity_cat4, parity_cat4, max_fsh, fsh_gt10, amh_last_value, amhcat3
+         , smoker, gravidity_cat4, parity_cat4, max_fsh, fsh_gt10, amh_last_value, amhcat3, amhcat3_new
          , male_infertility, endometriosis, dx_ovulation, diminished_ovarian_reserve
          , tubal_ligation, tubal_hydrosalpinx, tubal_other, dx_tubal
          , uterine, unexplained
