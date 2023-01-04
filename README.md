@@ -1,5 +1,6 @@
-# art-fert-prediction-tool
-A prediction algorithm for optimal number of oocytes to attempt to fertilize during assisted reproductive technology treatment.
+# Development of a Model to Estimate the Optimal Number of Oocytes to Attempt to Fertilize During Assisted Reproductive Technology Treatment
+
+Correia, Katharine F. B., Stacey A. Missmer, Rachel Weinerman, Elizabeth S. Ginsburg, and Brooke V. Rossi. “Development of a Model to Estimate the Optimal Number of Oocytes to Attempt to Fertilize During Assisted Reproductive Technology Treatment.” JAMA Network Open 6, no. 1 (January 3, 2023): e2249395. https://doi.org/10.1001/jamanetworkopen.2022.49395.
 
 This repository holds the code used to develop [this interactive prediction tool](https://katharine-correia.shinyapps.io/art_fert_prediction_tool/), including code to wrangle data, build models, and assess operating characteristics.
 
